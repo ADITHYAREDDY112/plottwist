@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Environment
+.env
+frontend/.env
+
+# Data — too large for GitHub
+data/raw/
+data/processed/train.csv
+data/processed/val.csv
+data/processed/test.csv
+
+# Old dense TF-IDF — replaced by sparse
+data/models/tfidf_dense.npy
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Misc
+.DS_Store
+*.log
+Thumbs.db

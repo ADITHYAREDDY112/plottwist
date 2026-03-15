@@ -1,0 +1,6 @@
+{
+    "python.defaultInterpreterPath": "c:\\Users\\adith\\plottwist \\venv\\Scripts\\python.exe",
+    "python.analysis.extraPaths": [
+        "c:\\Users\\adith\\plottwist \\engines"
+    ]
+}
