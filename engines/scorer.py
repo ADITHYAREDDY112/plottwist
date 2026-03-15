@@ -18,6 +18,7 @@ from cf.cf_engine import TwoTowerNCF, get_cf_scores
 from cbf.cbf_engine import get_cbf_scores
 from emotional.emotional_engine import get_emotional_scores, MOOD_TO_ARCS
 from context.context_engine import get_context_score
+from faiss_index.faiss_engine import load_faiss_index, get_faiss_candidates
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 log = logging.getLogger(__name__)
@@ -50,6 +51,17 @@ class plottwistScorer:
         self.cf_model.eval()
         log.info("✅ CF model loaded")
 
+        # ── FAISS index ────────────────────────────────────────────────────
+        if (MODELS / "faiss_index.bin").exists():
+            self.faiss_index, self.movie_embeddings = load_faiss_index()
+            self.use_faiss = True
+            log.info("✅ FAISS index loaded")
+        else:
+            self.faiss_index      = None
+            self.movie_embeddings = None
+            self.use_faiss        = False
+            log.info("ℹ️  FAISS index not found — using brute force scoring")
+
         # ── CBF — prefer sparse, fallback to dense ─────────────────────────
         if (MODELS / "tfidf_sparse.npz").exists():
             tfidf_sparse     = sp.load_npz(MODELS / "tfidf_sparse.npz")
@@ -65,18 +77,16 @@ class plottwistScorer:
         self.arc_df = pd.read_csv(PROCESSED / "movie_arcs.csv")
         log.info("✅ Emotional arc data loaded")
 
-        # ── Seen index — fast O(1) user lookup ────────────────────────────
+        # ── Seen index ────────────────────────────────────────────────────
         if (MODELS / "seen_index.pkl").exists():
             with open(MODELS / "seen_index.pkl", "rb") as f:
                 self.seen_index = pickle.load(f)
-            # Slim train_df — only columns needed for CBF/emotional engines
             self.train_df = pd.read_csv(
                 PROCESSED / "train.csv",
                 usecols=["user_idx", "movie_idx", "rating", "timestamp"]
             )
             log.info("✅ Seen index + slim train_df loaded")
         else:
-            # Fallback — build seen index from full train_df
             self.train_df = pd.read_csv(PROCESSED / "train.csv")
             self.seen_index = (
                 self.train_df.groupby("user_idx")["movie_idx"]
@@ -127,11 +137,21 @@ class plottwistScorer:
         return self._minmax(self._pad(arr, self.n_movies))
 
     def get_seen(self, user_idx):
-        """Fast O(1) lookup using precomputed seen index."""
         return np.array(self.seen_index.get(int(user_idx), []), dtype=np.int64)
 
     def is_cold_start(self, user_idx, min_ratings=5):
         return len(self.seen_index.get(int(user_idx), [])) < min_ratings
+
+    def _get_cf_scores_for_candidates(self, user_idx, candidates):
+        """Score only FAISS candidate movies — faster than scoring all 10K."""
+        self.cf_model.eval()
+        with torch.no_grad():
+            u_tensor = torch.tensor([user_idx], dtype=torch.long).to(DEVICE)
+            u_vec    = self.cf_model.forward_user(u_tensor)
+            c_tensor = torch.tensor(candidates, dtype=torch.long).to(DEVICE)
+            m_vecs   = self.cf_model.forward_movie(c_tensor)
+            scores   = (u_vec * m_vecs).sum(dim=-1).cpu().numpy()
+        return scores
 
 
     # ── Per-user score computation ─────────────────────────────────────────
@@ -144,18 +164,32 @@ class plottwistScorer:
         if self.is_cold_start(user_idx):
             w_cf, w_cbf = 0.15, 0.55
 
-        # ── CF ─────────────────────────────────────────────────────────────
-        valid_seen_cf = seen[seen < self.cf_n_movies] if mask_seen else None
-        cf_raw    = get_cf_scores(
-            self.cf_model, user_idx, self.cf_n_movies,
-            seen_movie_idxs=valid_seen_cf,
-        )
+        # ── Stage 1: FAISS candidate retrieval ─────────────────────────────
+        if self.use_faiss:
+            valid_seen_cf  = seen[seen < self.cf_n_movies] if mask_seen else None
+            candidates, _  = get_faiss_candidates(
+                self.cf_model, user_idx, self.faiss_index,
+                n_candidates    = 500,
+                seen_movie_idxs = valid_seen_cf,
+            )
+            cf_raw             = np.full(self.n_movies, -np.inf)
+            candidate_scores   = self._get_cf_scores_for_candidates(
+                user_idx, candidates)
+            cf_raw[candidates] = candidate_scores
+        else:
+            valid_seen_cf = seen[seen < self.cf_n_movies] if mask_seen else None
+            cf_raw        = get_cf_scores(
+                self.cf_model, user_idx, self.cf_n_movies,
+                seen_movie_idxs=valid_seen_cf,
+            )
+
         cf_scores = self._minmax(self._pad(cf_raw, self.n_movies))
 
         # ── CBF ────────────────────────────────────────────────────────────
         cbf_raw    = get_cbf_scores(
             user_idx, self.train_df,
-            self.tfidf_dense, self.semantic_embeddings,
+            self.tfidf_dense,
+            semantic_embeddings=self.semantic_embeddings,
             seen_movie_idxs=seen if mask_seen else None,
         )
         cbf_scores = self._minmax_safe(cbf_raw)
