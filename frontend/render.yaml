@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: plottwist-frontend
+    env: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_TMDB_API_KEY
+        value: 38f6bca5f39c5111d0fe99dce6308396
+      - key: VITE_YOUTUBE_API_KEY
+        value: AIzaSyDlxyRTXk1Aye8ErahxFWpqQBuJ9ur41K4
