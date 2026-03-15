@@ -6,6 +6,6 @@ services:
     staticPublishPath: ./dist
     envVars:
       - key: VITE_TMDB_API_KEY
-        value: 38f6bca5f39c5111d0fe99dce6308396
+        value:  ${VITE_TMDB_API_KEY}
       - key: VITE_YOUTUBE_API_KEY
-        value: AIzaSyDlxyRTXk1Aye8ErahxFWpqQBuJ9ur41K4
+        value:  ${VITE_YOUTUBE_API_KEY}
