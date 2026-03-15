@@ -51,27 +51,28 @@ class plottwistScorer:
         self.cf_model.eval()
         log.info("✅ CF model loaded")
 
-        # ── FAISS index ────────────────────────────────────────────────────
+        # ── FAISS IVFPQ index — no raw embeddings loaded ───────────────────
         if (MODELS / "faiss_index.bin").exists():
-            self.faiss_index, self.movie_embeddings = load_faiss_index()
-            self.use_faiss = True
+            self.faiss_index = load_faiss_index()
+            self.use_faiss   = True
             log.info("✅ FAISS index loaded")
         else:
-            self.faiss_index      = None
-            self.movie_embeddings = None
-            self.use_faiss        = False
+            self.faiss_index = None
+            self.use_faiss   = False
             log.info("ℹ️  FAISS index not found — using brute force scoring")
 
-        # ── CBF — prefer sparse, fallback to dense ─────────────────────────
+        # ── CBF — sparse TF-IDF only, no semantic embeddings ──────────────
         if (MODELS / "tfidf_sparse.npz").exists():
             tfidf_sparse     = sp.load_npz(MODELS / "tfidf_sparse.npz")
             self.tfidf_dense = np.array(tfidf_sparse.todense(), dtype=np.float32)
-            log.info("✅ CBF artifacts loaded (sparse → dense)")
+            log.info("✅ CBF TF-IDF loaded (sparse → dense)")
         else:
             self.tfidf_dense = np.load(MODELS / "tfidf_dense.npy")
-            log.info("✅ CBF artifacts loaded (dense)")
+            log.info("✅ CBF TF-IDF loaded (dense)")
 
-        self.semantic_embeddings = np.load(MODELS / "semantic_embeddings.npy")
+        # No semantic embeddings — FAISS handles semantic retrieval
+        self.semantic_embeddings = None
+        log.info("ℹ️  Semantic embeddings skipped — FAISS handles semantic search")
 
         # ── Emotional arc ──────────────────────────────────────────────────
         self.arc_df = pd.read_csv(PROCESSED / "movie_arcs.csv")
@@ -92,7 +93,7 @@ class plottwistScorer:
                 self.train_df.groupby("user_idx")["movie_idx"]
                              .apply(list).to_dict()
             )
-            log.info("✅ train_df loaded (run scripts/optimize_artifacts.py to speed up)")
+            log.info("✅ train_df loaded")
 
         # ── Supporting data ────────────────────────────────────────────────
         self.movies_df = pd.read_csv(PROCESSED / "movies.csv")
@@ -105,7 +106,6 @@ class plottwistScorer:
         self.n_movies = max(
             self.cf_n_movies,
             len(self.tfidf_dense),
-            len(self.semantic_embeddings),
             int(self.arc_df["movie_idx"].max()) + 1,
         )
         log.info(f"Canonical n_movies: {self.n_movies}")
@@ -143,7 +143,7 @@ class plottwistScorer:
         return len(self.seen_index.get(int(user_idx), [])) < min_ratings
 
     def _get_cf_scores_for_candidates(self, user_idx, candidates):
-        """Score only FAISS candidate movies — faster than scoring all 10K."""
+        """Score only FAISS candidate movies."""
         self.cf_model.eval()
         with torch.no_grad():
             u_tensor = torch.tensor([user_idx], dtype=torch.long).to(DEVICE)
@@ -185,11 +185,11 @@ class plottwistScorer:
 
         cf_scores = self._minmax(self._pad(cf_raw, self.n_movies))
 
-        # ── CBF ────────────────────────────────────────────────────────────
+        # ── CBF — TF-IDF only ──────────────────────────────────────────────
         cbf_raw    = get_cbf_scores(
             user_idx, self.train_df,
             self.tfidf_dense,
-            semantic_embeddings=self.semantic_embeddings,
+            semantic_embeddings=None,
             seen_movie_idxs=seen if mask_seen else None,
         )
         cbf_scores = self._minmax_safe(cbf_raw)
