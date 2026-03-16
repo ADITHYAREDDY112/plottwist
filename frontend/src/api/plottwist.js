@@ -1,5 +1,5 @@
 import axios from "axios"
-const API = import.meta.env.VITE_API_URL || "http://localhost:8000"
+const API = import.meta.env.VITE_API_URL || "https://adithya112-plottwist.hf.space"
 
 export const getRecommendations = async (userId, mood, topK = 20) => {
     try {
