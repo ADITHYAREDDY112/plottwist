@@ -57,4 +57,4 @@ urllib3==2.6.3
 uvicorn==0.41.0
 vaderSentiment==3.3.2
 faiss-cpu==1.7.4
-pyarrow
+pyarrow==15.0.0
