@@ -83,7 +83,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins = [
     "http://localhost:5173",
-    "https://plottwist-frontend.onrender.com",],
+    "https://plottwistui.vercel.app",],
     allow_methods = ["*"],
     allow_headers = ["*"],
 )
