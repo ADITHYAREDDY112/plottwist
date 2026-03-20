@@ -158,16 +158,19 @@ def build_user_profile(user_idx, train_df, tfidf_dense, semantic_embeddings,
         return None, None
 
     tfidf_profile   = (tfidf_dense[movie_idxs] * weights[:, None]).sum(axis=0)
-    semantic_profile = (semantic_embeddings[movie_idxs] * weights[:, None]).sum(axis=0)
+    semantic_profile = None
+    if semantic_embeddings is not None:
+        semantic_profile = (semantic_embeddings[movie_idxs] * weights[:, None]).sum(axis=0)
 
     # L2 normalize profiles
     tfidf_norm = np.linalg.norm(tfidf_profile)
-    sem_norm   = np.linalg.norm(semantic_profile)
-
     if tfidf_norm > 0:
         tfidf_profile /= tfidf_norm
-    if sem_norm > 0:
-        semantic_profile /= sem_norm
+
+    if semantic_profile is not None:
+        sem_norm = np.linalg.norm(semantic_profile)
+        if sem_norm > 0:
+            semantic_profile /= sem_norm
 
     return tfidf_profile, semantic_profile
 
@@ -182,18 +185,19 @@ def get_cbf_scores(user_idx, train_df, tfidf_dense, semantic_embeddings,
     if tfidf_profile is None:
         return None
 
-    tfidf_scores    = tfidf_dense @ tfidf_profile
-    semantic_scores = semantic_embeddings @ semantic_profile
+    scores = tfidf_dense @ tfidf_profile
 
-    # ── Normalize each score array to [0,1] before blending ──
+    # ── Normalize to [0,1] ──
     def minmax(arr):
         mn, mx = arr.min(), arr.max()
         return (arr - mn) / (mx - mn + 1e-8)
 
-    tfidf_scores    = minmax(tfidf_scores)
-    semantic_scores = minmax(semantic_scores)
+    scores = minmax(scores)
 
-    scores = alpha * semantic_scores + (1 - alpha) * tfidf_scores
+    if semantic_profile is not None and semantic_embeddings is not None:
+        semantic_scores = semantic_embeddings @ semantic_profile
+        semantic_scores = minmax(semantic_scores)
+        scores = alpha * semantic_scores + (1 - alpha) * scores
 
     if seen_movie_idxs is not None:
         scores[seen_movie_idxs] = -np.inf

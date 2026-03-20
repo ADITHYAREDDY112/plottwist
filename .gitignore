@@ -15,6 +15,7 @@ data/raw/
 data/processed/train.csv
 data/processed/val.csv
 data/processed/test.csv
+data/processed/train_slim.csv
 
 # Old dense TF-IDF — replaced by sparse
 data/models/tfidf_dense.npy
@@ -28,3 +29,13 @@ frontend/dist/
 *.log
 Thumbs.db
 semantic_embeddings.npy
+
+# IDE
+.vscode/
+.pyre/
+.pyre_configuration
+pyrightconfig.json
+pyproject.toml
+
+# Deployment configs
+render.yaml

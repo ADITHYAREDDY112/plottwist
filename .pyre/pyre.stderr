@@ -1,3 +1,0 @@
-2026-03-12 23:47:36,626 [PID 24624] INFO Stopping classic server...
-2026-03-12 23:47:36,630 [PID 24624] INFO Socket is C:\Users\adith\AppData\Local\Temp\pyre_server_a3a13a83a31ded29.sock
-2026-03-12 23:47:36,632 [PID 24624] ERROR module 'socket' has no attribute 'AF_UNIX'

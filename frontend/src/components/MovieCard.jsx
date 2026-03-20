@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { searchMovie, posterUrl } from "../api/tmdb"
+import { searchMovie, getMovieDetails, posterUrl } from "../api/tmdb"
 import { useStore } from "../store/useStore"
 
 const ARC_COLORS = {
@@ -17,10 +17,16 @@ export default function MovieCard({ movie, index = 0, onClick, size = "normal" }
     const width = size === "large" ? 200 : 160
 
     useEffect(() => {
-        searchMovie(movie.title).then(r => {
-            if (r?.poster_path) setPoster(posterUrl(r.poster_path))
-        })
-    }, [movie.title])
+        if (movie.tmdb_id && movie.tmdb_id > 0) {
+            getMovieDetails(movie.tmdb_id).then(r => {
+                if (r?.poster_path) setPoster(posterUrl(r.poster_path))
+            })
+        } else {
+            searchMovie(movie.title).then(r => {
+                if (r?.poster_path) setPoster(posterUrl(r.poster_path))
+            })
+        }
+    }, [movie.tmdb_id, movie.title])
 
     return (
         <motion.div

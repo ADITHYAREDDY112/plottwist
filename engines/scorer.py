@@ -79,28 +79,84 @@ class plottwistScorer:
         log.info("✅ Emotional arc data loaded")
 
         # ── Seen index ────────────────────────────────────────────────────
+        train_path = PROCESSED / "train_slim.parquet"
+        if not train_path.exists():
+            train_path = PROCESSED / "train_slim.csv"
+        if not train_path.exists():
+            train_path = PROCESSED / "train.csv"
+
         if (MODELS / "seen_index.pkl").exists():
             with open(MODELS / "seen_index.pkl", "rb") as f:
                 self.seen_index = pickle.load(f)
-            self.train_df = pd.read_csv(
-                PROCESSED / "train.csv",
-                usecols=["user_idx", "movie_idx", "rating", "timestamp"]
-            )
-            log.info("✅ Seen index + slim train_df loaded")
+            
+            # Read header to check columns
+            if train_path.suffix == ".parquet":
+                import pyarrow.parquet as pq
+                available_cols = pq.read_schema(train_path).names
+                use_cols = ["user_idx", "movie_idx", "rating"]
+                if "timestamp" in available_cols:
+                    use_cols.append("timestamp")
+                self.train_df = pd.read_parquet(train_path, columns=use_cols)
+            else:
+                available_cols = pd.read_csv(train_path, nrows=0).columns.tolist()
+                use_cols = ["user_idx", "movie_idx", "rating"]
+                if "timestamp" in available_cols:
+                    use_cols.append("timestamp")
+                self.train_df = pd.read_csv(train_path, usecols=use_cols)
+
+            if "timestamp" not in self.train_df.columns:
+                self.train_df["timestamp"] = datetime.now()
+
+            log.info(f"✅ Seen index + {train_path.name} loaded")
         else:
-            self.train_df = pd.read_csv(PROCESSED / "train.csv")
+            if train_path.suffix == ".parquet":
+                self.train_df = pd.read_parquet(train_path)
+            else:
+                self.train_df = pd.read_csv(train_path)
+            
+            if "timestamp" not in self.train_df.columns:
+                self.train_df["timestamp"] = datetime.now()
+
             self.seen_index = (
                 self.train_df.groupby("user_idx")["movie_idx"]
                              .apply(list).to_dict()
             )
-            log.info("✅ train_df loaded")
+            log.info(f"✅ {train_path.name} loaded")
 
-        # ── Supporting data ────────────────────────────────────────────────
+        # ── Load Core Data ────────────────────────────────────────────────
         self.movies_df = pd.read_csv(PROCESSED / "movies.csv")
         self.corpus_df = pd.read_csv(PROCESSED / "corpus.csv")
         self.movie_map = pd.read_csv(PROCESSED / "movie_map.csv")
         self.user_map  = pd.read_csv(PROCESSED / "user_map.csv")
-        log.info("✅ Data loaded")
+
+        # ── REBUILD METADATA FROM SOURCE OF TRUTH ─────────────────────────
+        # Bypasses the corrupted/shifted corpus.csv for user-facing info
+        meta = self.movies_df[["movieId", "title_clean", "genres"]].copy()
+        meta = meta.merge(self.movie_map, on="movieId", how="inner")
+        
+        links_path = PROCESSED / "links.csv"
+        if links_path.exists():
+            links_df = pd.read_csv(links_path, usecols=["movieId", "tmdbId"])
+            links_df["tmdbId"] = pd.to_numeric(links_df["tmdbId"], errors="coerce").fillna(-1).astype(int)
+            meta = meta.merge(links_df.rename(columns={"tmdbId": "tmdb_id"}), on="movieId", how="left")
+        else:
+            meta["tmdb_id"] = -1
+            
+        meta["tmdb_id"]   = meta["tmdb_id"].fillna(-1).astype(int)
+        meta["movie_idx"] = meta["movie_idx"].astype(int)
+        self.metadata_df  = meta.sort_values("movie_idx").reset_index(drop=True)
+
+        # ── Align corpus for scoring ─────────────────────────────────────
+        # We only need corpus content for TF-IDF/FAISS, but row order MUST match movie_idx
+        if "movie_idx" in self.corpus_df.columns:
+            self.corpus_df = self.corpus_df.drop(columns=["movie_idx"])
+        if "tmdb_id" in self.corpus_df.columns:
+            self.corpus_df = self.corpus_df.drop(columns=["tmdb_id"])
+            
+        self.corpus_df = self.corpus_df.merge(self.movie_map, on="movieId", how="inner")
+        self.corpus_df = self.corpus_df.sort_values("movie_idx").reset_index(drop=True)
+
+        log.info(f"✅ Data loaded | Metadata built for {len(self.metadata_df):,} movies")
 
         # ── Canonical movie count ──────────────────────────────────────────
         self.n_movies = max(
@@ -245,9 +301,12 @@ class plottwistScorer:
     # ── Context multiplier ─────────────────────────────────────────────────
 
     def _apply_context(self, scores, timestamp):
+        multiplier = get_context_score(timestamp)
+        if multiplier == 1.0:
+            return scores
+
         hour       = timestamp.hour
         is_weekend = timestamp.weekday() >= 5
-        multiplier = get_context_score(timestamp)
 
         if hour >= 21 or hour < 6:
             boost_genres = ["thriller", "horror", "noir", "crime"]
@@ -256,16 +315,18 @@ class plottwistScorer:
         else:
             boost_genres = ["comedy", "animation", "romance"]
 
+        # Vectorized boost
         boosted = scores.copy()
-        for _, row in self.corpus_df.iterrows():
-            movie_idx = int(row["movie_idx"])
-            if movie_idx >= len(boosted):
-                continue
-            if boosted[movie_idx] == -np.inf:
-                continue
-            if any(g in str(row["genres_clean"]) for g in boost_genres):
-                boosted[movie_idx] *= multiplier
-
+        
+        # Pre-filter corpus_df to movies that match any boost_genres
+        # Note: corpus_df row index corresponds to predicted score indices
+        mask = self.corpus_df["genres_clean"].str.contains("|".join(boost_genres), case=False, na=False)
+        boost_indices = self.corpus_df[mask].index.values
+        
+        # Limit to valid indices in boosted array
+        boost_indices = boost_indices[boost_indices < len(boosted)]
+        
+        boosted[boost_indices] *= multiplier
         return boosted
 
 
@@ -273,20 +334,28 @@ class plottwistScorer:
 
     def _format_results(self, top_k_idx, scores):
         results = []
-        for rank, movie_idx in enumerate(top_k_idx, 1):
-            movie_row = self.corpus_df[self.corpus_df["movie_idx"] == movie_idx]
-            if movie_row.empty:
+        for rank, movie_idx_int in enumerate(top_k_idx, 1):
+            movie_idx_int = int(movie_idx_int)
+            if movie_idx_int >= len(self.corpus_df):
                 continue
-            arc_row = self.arc_df[self.arc_df["movie_idx"] == movie_idx]
+                
+            movie_row = self.metadata_df.iloc[movie_idx_int]
+            
+            arc_row = self.arc_df[self.arc_df["movie_idx"] == movie_idx_int]
             arc     = arc_row["primary_arc"].values[0] \
                       if not arc_row.empty else "unknown"
+            
+            # Clean genres: replace | with space for frontend
+            genres_clean = str(movie_row["genres"]).replace("|", " ")
+
             results.append({
                 "rank"      : rank,
-                "movie_idx" : int(movie_idx),
-                "title"     : movie_row["title_clean"].values[0],
-                "genres"    : movie_row["genres_clean"].values[0],
+                "movie_idx" : movie_idx_int,
+                "tmdb_id"   : int(movie_row["tmdb_id"]),
+                "title"     : movie_row["title_clean"],
+                "genres"    : genres_clean,
                 "arc"       : arc,
-                "score"     : round(float(scores[movie_idx]), 4),
+                "score"     : round(float(scores[movie_idx_int]), 4),
             })
         return results
 

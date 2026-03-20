@@ -1,6 +1,0 @@
-[tool.pyre]
-source-directories = ["."]
-search-path = [
-    "venv/Lib/site-packages",
-    "engines"
-]

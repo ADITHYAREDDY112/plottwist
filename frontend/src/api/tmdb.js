@@ -59,6 +59,7 @@ export const getTopRated = async () => {
 
 export const tmdbToMovie = (r, rank) => ({
     movie_idx: r.id,
+    tmdb_id: r.id,
     title: r.title,
     genres: r.genre_ids?.join(" ") || "",
     arc: "neutral_fun",

@@ -103,6 +103,7 @@ class RecommendRequest(BaseModel):
 class MovieResult(BaseModel):
     rank      : int
     movie_idx : int
+    tmdb_id   : int
     title     : str
     genres    : str
     arc       : str
@@ -163,6 +164,10 @@ def recommend(req: RecommendRequest):
         log.error(f"Scorer error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+    # ADD THIS SAFETY CHECK
+    if results is None:
+        results = []
+
     # Diversify then trim to requested top_k
     diversified = diversify(results, max_per_genre=3, max_per_arc=4)
     diversified = diversified[:req.top_k]
@@ -170,10 +175,11 @@ def recommend(req: RecommendRequest):
     return RecommendResponse(
         user_idx    = req.user_idx,
         mood        = req.mood,
-        family_mode = bool(req.watch_group and len(req.watch_group) > 1),
+        family_mode = req.watch_group is not None,
         timestamp   = now.isoformat(),
         results     = [MovieResult(**r) for r in diversified],
     )
+
 
 
 @app.get("/moods")
