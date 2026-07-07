@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from cf.cf_engine import TwoTowerNCF, get_cf_scores
 from cbf.cbf_engine import get_cbf_scores
 from emotional.emotional_engine import get_emotional_scores, MOOD_TO_ARCS
-from context.context_engine import get_context_score
+from context.context_engine import get_context_metadata
 from faiss_index.faiss_engine import load_faiss_index, get_faiss_candidates
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
@@ -301,19 +301,11 @@ class plottwistScorer:
     # ── Context multiplier ─────────────────────────────────────────────────
 
     def _apply_context(self, scores, timestamp):
-        multiplier = get_context_score(timestamp)
-        if multiplier == 1.0:
+        context = get_context_metadata(timestamp)
+        multiplier = context["multiplier"]
+        boost_genres = context["boosted_genres"]
+        if multiplier == 1.0 or not boost_genres:
             return scores
-
-        hour       = timestamp.hour
-        is_weekend = timestamp.weekday() >= 5
-
-        if hour >= 21 or hour < 6:
-            boost_genres = ["thriller", "horror", "noir", "crime"]
-        elif is_weekend:
-            boost_genres = ["drama", "adventure", "sci fi"]
-        else:
-            boost_genres = ["comedy", "animation", "romance"]
 
         # Vectorized boost
         boosted = scores.copy()

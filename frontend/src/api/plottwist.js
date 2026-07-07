@@ -5,10 +5,15 @@ export const getRecommendations = async (userId, mood, topK = 20) => {
     try {
         // Clamp userId to valid range
         const safeId = Math.abs(Math.floor(userId)) % 69000
+        const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
         const res = await axios.post(`${API}/recommend`, {
             user_idx: safeId,
             mood: mood || undefined,
             top_k: topK,
+            context: {
+                timestamp: new Date().toISOString(),
+                timezone,
+            },
         })
         return res.data.results || []
     } catch (e) {

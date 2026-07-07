@@ -3,6 +3,7 @@ import random
 import logging
 from pathlib import Path
 from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Optional, List
 from contextlib import asynccontextmanager
 from collections import defaultdict
@@ -13,6 +14,7 @@ from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "engines"))
 from scorer import plottwistScorer
+from context.context_engine import get_context_metadata
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 log = logging.getLogger(__name__)
@@ -91,6 +93,10 @@ app.add_middleware(
 
 # ── Schemas ────────────────────────────────────────────────────────────────
 
+class ClientContext(BaseModel):
+    timestamp : Optional[str] = Field(None)
+    timezone  : Optional[str] = Field(None)
+
 class RecommendRequest(BaseModel):
     user_idx    : int                  = Field(..., ge=0)
     mood        : Optional[str]        = Field(None)
@@ -99,6 +105,7 @@ class RecommendRequest(BaseModel):
     w_cf        : float                = Field(0.50, ge=0, le=1)
     w_cbf       : float                = Field(0.20, ge=0, le=1)
     w_emotional : float                = Field(0.20, ge=0, le=1)
+    context     : Optional[ClientContext] = Field(None)
 
 class MovieResult(BaseModel):
     rank      : int
@@ -109,12 +116,44 @@ class MovieResult(BaseModel):
     arc       : str
     score     : float
 
+class ContextInfo(BaseModel):
+    source         : str
+    timestamp      : str
+    timezone       : Optional[str]
+    local_hour     : int
+    is_weekend     : bool
+    bucket         : str
+    multiplier     : float
+    boosted_genres : List[str]
+    personalized   : bool
+
 class RecommendResponse(BaseModel):
     user_idx    : int
     mood        : Optional[str]
     family_mode : bool
     timestamp   : str
+    context     : ContextInfo
     results     : List[MovieResult]
+
+
+def parse_recommendation_context(req: RecommendRequest) -> tuple[datetime, str, Optional[str]]:
+    client_context = req.context
+    if not client_context or not client_context.timestamp:
+        return datetime.now(), "server", None
+
+    try:
+        raw_timestamp = client_context.timestamp.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(raw_timestamp)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+
+        if client_context.timezone:
+            parsed = parsed.astimezone(ZoneInfo(client_context.timezone))
+
+        return parsed, "client", client_context.timezone
+    except (ValueError, ZoneInfoNotFoundError):
+        log.warning("Invalid client context supplied; falling back to server time")
+        return datetime.now(), "server_fallback", None
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
@@ -129,10 +168,8 @@ def recommend(req: RecommendRequest):
     if scorer is None:
         raise HTTPException(status_code=503, detail="Scorer not loaded yet")
 
-    valid_moods = {
-        "happy", "sad", "excited", "stressed",
-        "bored", "reflective", "angry"
-    }
+    from emotional.emotional_engine import MOOD_TO_ARCS
+    valid_moods = set(MOOD_TO_ARCS)
     if req.mood and req.mood not in valid_moods:
         raise HTTPException(
             status_code=422,
@@ -144,8 +181,20 @@ def recommend(req: RecommendRequest):
             status_code=404,
             detail=f"user_idx {req.user_idx} out of range (max: {scorer.cf_n_users - 1})"
         )
+    if req.watch_group:
+        invalid_members = [u for u in req.watch_group if u < 0 or u >= scorer.cf_n_users]
+        if invalid_members:
+            raise HTTPException(
+                status_code=404,
+                detail=f"watch_group contains invalid user_idx values: {invalid_members}"
+            )
 
-    now = datetime.now()
+    now, context_source, context_timezone = parse_recommendation_context(req)
+    context_info = get_context_metadata(
+        now,
+        source=context_source,
+        timezone=context_timezone,
+    )
 
     try:
         # Fetch extra candidates so diversity re-ranker has room to work
@@ -177,6 +226,7 @@ def recommend(req: RecommendRequest):
         mood        = req.mood,
         family_mode = req.watch_group is not None,
         timestamp   = now.isoformat(),
+        context     = ContextInfo(**context_info),
         results     = [MovieResult(**r) for r in diversified],
     )
 
